@@ -8,7 +8,7 @@
   - Loads questions from `Question/questions.csv`
   - Talks to COM7 REST APIs
 - `firmware/COM7_Gateway/`:
-  - ESP32 AP + gateway REST service，支持最多 8 个答题终端节点
+  - ESP32 AP + gateway REST service，支持最多 16 个答题终端节点
 - `firmware/COM6_Terminal/`:
   - ESP32 button/LED answer terminal（每块终端板一个 NODE_ID）
 

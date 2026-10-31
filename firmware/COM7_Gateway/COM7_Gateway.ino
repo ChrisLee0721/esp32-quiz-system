@@ -16,7 +16,7 @@ const char* AP_PASS = "12345678";
 
 WebServer server(80);
 
-const int MAX_NODES = 8;
+const int MAX_NODES = 16;
 NodeState nodes[MAX_NODES];
 StaticJsonDocument<1024> lastQuestion;
 
@@ -84,7 +84,7 @@ void handleGatewayStatus() {
 }
 
 void handleNodes() {
-  StaticJsonDocument<1024> doc;
+  StaticJsonDocument<3072> doc;
   JsonArray arr = doc.createNestedArray("nodes");
   for (int i = 0; i < MAX_NODES; i++) {
     if (!nodes[i].used) continue;
