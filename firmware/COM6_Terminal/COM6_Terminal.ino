@@ -6,9 +6,11 @@
 #include <freertos/queue.h>
 #include <freertos/task.h>
 
-const char* WIFI_SSID = "QuizHub-ESP32";
-const char* WIFI_PASS = "12345678";
-const char* GATEWAY_BASE = "http://192.168.4.1";
+// Same 2.4 GHz router as the gateway and the PC. GATEWAY_BASE is the IP the
+// gateway prints on boot (or the address you reserved for it on the router).
+const char* WIFI_SSID = "TP-Link_B962";
+const char* WIFI_PASS = "45636066";
+const char* GATEWAY_BASE = "http://192.168.0.152";
 
 // Human-friendly prefix. The firmware appends "-XXXX" (last 2 bytes of the
 // station MAC) so two boards flashed with the same prefix still register as
@@ -31,7 +33,10 @@ const int PIN_LED_D = 32;
 WebServer server(80);
 
 unsigned long lastHeartbeatMs = 0;
-const unsigned long HEARTBEAT_INTERVAL = 3000;
+// Keep this slow: every heartbeat is a fresh TCP connection (the gateway's
+// WebServer always answers Connection: close) and all terminals share one
+// 2.4G radio, so fast heartbeats eat airtime for no benefit.
+const unsigned long HEARTBEAT_INTERVAL = 10000;
 bool wifiWasConnected = false;
 
 unsigned long lastDebounceMs[4] = {0, 0, 0, 0};
