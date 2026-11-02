@@ -2,12 +2,20 @@
 #include <WebServer.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/queue.h>
+#include <freertos/task.h>
 
 const char* WIFI_SSID = "QuizHub-ESP32";
 const char* WIFI_PASS = "12345678";
 const char* GATEWAY_BASE = "http://192.168.4.1";
 
-const char* NODE_ID = "COM6";
+// Human-friendly prefix. The firmware appends "-XXXX" (last 2 bytes of the
+// station MAC) so two boards flashed with the same prefix still register as
+// distinct nodes instead of silently overwriting each other on the gateway.
+const char* NODE_PREFIX = "COM6";
+
+char NODE_ID[24];
 
 const int PIN_LED_CORRECT = 13;
 const int PIN_LED_WRONG = 34;
@@ -24,13 +32,20 @@ WebServer server(80);
 
 unsigned long lastHeartbeatMs = 0;
 const unsigned long HEARTBEAT_INTERVAL = 3000;
-bool registered = false;
+bool wifiWasConnected = false;
 
 unsigned long lastDebounceMs[4] = {0, 0, 0, 0};
 int lastStableBtnState[4] = {HIGH, HIGH, HIGH, HIGH};
 int lastRawBtnState[4] = {HIGH, HIGH, HIGH, HIGH};
 
 String selectedOption = "";
+
+struct OutboundMsg {
+  char path[48];
+  char body[256];
+};
+
+QueueHandle_t outboundQueue;
 
 int buttonPinByIndex(int i) {
   if (i == 0) return PIN_BTN_A;
@@ -78,21 +93,41 @@ void clearJudgement() {
   digitalWrite(PIN_LED_WRONG, LOW);
 }
 
-bool httpPostJson(const String& path, JsonDocument& payload) {
+bool httpPostRaw(const char* path, const String& body) {
   if (WiFi.status() != WL_CONNECTED) return false;
 
   HTTPClient http;
-  String url = String(GATEWAY_BASE) + path;
-  http.begin(url);
+  http.begin(String(GATEWAY_BASE) + path);
   http.addHeader("Content-Type", "application/json");
-  http.setTimeout(800);
-
-  String body;
-  serializeJson(payload, body);
+  http.setTimeout(600);
 
   int code = http.POST(body);
   http.end();
   return code >= 200 && code < 300;
+}
+
+// Blocking HTTP lives here so loop() keeps scanning buttons and answering
+// the gateway's /internal routes even while a POST is in flight.
+void outboundTask(void*) {
+  OutboundMsg msg;
+  for (;;) {
+    if (xQueueReceive(outboundQueue, &msg, portMAX_DELAY) == pdTRUE) {
+      httpPostRaw(msg.path, String(msg.body));
+    }
+  }
+}
+
+void enqueuePost(const char* path, JsonDocument& payload) {
+  if (WiFi.status() != WL_CONNECTED) return;
+
+  OutboundMsg msg;
+  String body;
+  serializeJson(payload, body);
+  if (body.length() >= sizeof(msg.body)) return;
+
+  strlcpy(msg.path, path, sizeof(msg.path));
+  strlcpy(msg.body, body.c_str(), sizeof(msg.body));
+  xQueueSend(outboundQueue, &msg, 0);
 }
 
 void sendRegister() {
@@ -104,14 +139,14 @@ void sendRegister() {
   caps.add("buttons4");
   caps.add("led4");
   caps.add("judge2");
-  httpPostJson("/internal/v1/register", payload);
+  enqueuePost("/internal/v1/register", payload);
 }
 
 void sendHeartbeat() {
   StaticJsonDocument<128> payload;
   payload["nodeId"] = NODE_ID;
   payload["uptimeMs"] = millis();
-  httpPostJson("/internal/v1/heartbeat", payload);
+  enqueuePost("/internal/v1/heartbeat", payload);
 }
 
 void sendAnswerEvent() {
@@ -126,7 +161,7 @@ void sendAnswerEvent() {
     arr.add(selectedOption);
   }
 
-  httpPostJson("/internal/v1/events/answer", payload);
+  enqueuePost("/internal/v1/events/answer", payload);
 }
 
 void setupPins() {
@@ -151,6 +186,13 @@ void connectWiFi() {
   WiFi.mode(WIFI_STA);
   WiFi.setAutoReconnect(true);
   WiFi.begin(WIFI_SSID, WIFI_PASS);
+}
+
+void buildNodeId() {
+  String mac = WiFi.macAddress();
+  mac.replace(":", "");
+  String suffix = mac.substring(mac.length() - 4);
+  snprintf(NODE_ID, sizeof(NODE_ID), "%s-%s", NODE_PREFIX, suffix.c_str());
 }
 
 void handleJudgement() {
@@ -205,6 +247,12 @@ void setup() {
   Serial.begin(115200);
   setupPins();
   connectWiFi();
+  buildNodeId();
+  Serial.print("NODE_ID: ");
+  Serial.println(NODE_ID);
+
+  outboundQueue = xQueueCreate(8, sizeof(OutboundMsg));
+  xTaskCreatePinnedToCore(outboundTask, "outbound", 8192, nullptr, 1, nullptr, 1);
 
   server.on("/internal/v1/judgement", HTTP_POST, handleJudgement);
   server.on("/internal/v1/reset", HTTP_POST, handleReset);
@@ -222,12 +270,15 @@ void loop() {
   processButton(2);
   processButton(3);
 
-  if (WiFi.status() != WL_CONNECTED) return;
-
-  if (!registered) {
+  bool connected = (WiFi.status() == WL_CONNECTED);
+  if (connected && !wifiWasConnected) {
     sendRegister();
-    registered = true;
+    sendHeartbeat();
+    lastHeartbeatMs = millis();
   }
+  wifiWasConnected = connected;
+
+  if (!connected) return;
 
   if (millis() - lastHeartbeatMs >= HEARTBEAT_INTERVAL) {
     lastHeartbeatMs = millis();
