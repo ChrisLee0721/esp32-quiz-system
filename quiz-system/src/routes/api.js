@@ -103,12 +103,17 @@ export function buildApiRouter({ questions, store, com7 }) {
 
     for (const r of results) {
       store.recordJudgement(r.isCorrect);
-      try {
-        await com7.pushJudgement(r.nodeId, { questionId, isCorrect: r.isCorrect, correctOption });
-      } catch (_error) {
-        // judgement LED push is best-effort; results are still counted
-      }
     }
+
+    await Promise.all(
+      results.map(async (r) => {
+        try {
+          await com7.pushJudgement(r.nodeId, { questionId, isCorrect: r.isCorrect, correctOption });
+        } catch (_error) {
+          // judgement LED push is best-effort; results are still counted
+        }
+      })
+    );
 
     const correctCount = results.filter((r) => r.isCorrect).length;
     res.json({
